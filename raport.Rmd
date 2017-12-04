@@ -1,0 +1,279 @@
+---
+title: "Raport dotycz¹cy energii s³onecznej, wytwarzanej przez panele fotowoltaiczne"
+author: "Katarzyna Boczek, nr indeksu 117317"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    keep_md: yes
+---
+
+<!-- KONFIGURACJA -->
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(results = 'hide')
+```
+
+# Podsumowanie analizy
+
+W ramach niniejszego zadania pracowano na danych pochodz¹cych z trzech elektrowni s³onecznych we W³oszech. Celem pracy by³a próba przewidzenia energii wytwarzanej przez panele fotowoltaiczne w oparciu o historyczne dane. W pierwszym kroku przeanalizowano posiadany zbiór danych pod k¹tem wystêpowania tzw. missing values. Problemem okaza³o siê rozró¿nianie wartoœci prawid³owych od wartoœci brakuj¹cych, poniewa¿ te drugie reprezentowane by³y przez wartoœæ zero, która w innym przypadku by³a wartoœci¹ prawid³ow¹. Na podstawie iloœci wytworzonej energii wyodrêbniono przypadki brakuj¹cej wartoœci promieniowania s³onecznego `irradiamento`, a nastêpnie oszacowano dla nich mo¿liw¹ wartoœæ w oparciu o pomiary innych czujników wykonane o tej samej godzinie, tego samego dnia. Nastêpnie sprawdzono korelacje wystêpuj¹ce miêdzy poszczególnymi zmiennymi analizowanego zbioru danych. Zgodnie z przypuszczeniami, okaza³o siê, ¿e najwiêkszy wp³yw na iloœæ wytwarzanej energii ma miêdzy innymi iloœæ promieniowania s³onecznego oraz wilgotnoœæ powietrza. Atrybuty te wykorzystano do stworzenia modelu regresji, wykorzystuj¹c metodê `lm` czyli regresjê liniow¹.
+
+
+# Przygotowanie œrodowiska
+
+Przed przyst¹pieniem do analizy posiadanych danych, przygotowano œrodowisko niezbêdne do pracy. Przygotowanie to polega³o miêdzy innymi na za³adowaniu niezbêdnych bibliotek oraz zapewnieniu powtarzalnoœci wyników.
+
+
+## Wykorzystane biblioteki
+
+Podczas realizacji zadania wykorzystano nastêpuj¹ce biblioteki:
+
+```{r libraries, message = FALSE}
+library(dplyr)
+library(knitr)
+library(caret)
+library(plotly)
+library(ggplot2)
+library(reshape2)
+```
+
+
+## Zapewnienie powtarzalnoœci wyników
+
+Powtarzalnoœæ wyników zapewniono ustawiaj¹c sta³e ziarno:
+
+```{r seed_setting}
+set.seed(3)
+```
+
+
+# Wstêpne przetworzenie danych
+
+Po wczytaniu danych poddano je wstêpnej obróbce. Zajêto siê analiz¹ a nastêpnie obróbk¹ brakuj¹cych danych.
+
+
+## Wczytanie danych
+
+Dane wczytano do zmiennej `raw_df` wykorzystuj¹c funkcjê `read.csv()`:
+
+```{r data_loading}
+raw_df <- read.csv("elektrownie.csv")
+```
+
+
+## Przetworzenie brakuj¹cych danych
+
+W zwi¹zku z tym, ¿e przetwarzane dane pochodz¹ z czujników, które mog³y ulegaæ awarii, b¹dŸ by³y wy³¹czone przez pewien czas, w danych tych mo¿liwe jest wystêpowanie wartoœci pustych, nieokreœlonych czy zerowych. Z tego powodu, w miejscu tym dokonano przegl¹du analizowanych danych i poddano je obróbce. Poniewa¿ w posiadanym zbiorze, wartoœci brakuj¹ce reprezentowane s¹ przez wartoœæ 0, ciê¿ko jest oceniæ, które z wyst¹pnieñ tej wartoœci s¹ wartoœciami prawid³owymi, a które brakuj¹cymi. Uda³o siê to dla atrybutu `irradiamento`. Jeœli wytworzono energiê, tzn. `kwh > 0` a wartoœæ `irradiamento` jest równa 0, oznacza to, ¿e jest to wartoœæ brakuj¹ca, poniewa¿ w przeciwnym razie panel nie wytworzy³by energii. Znalezione w ten sposób wartoœci puste zast¹piono œredni¹ wartoœci¹ promieniowania o danej godzinie w danym dniu.
+
+```{r missing_values}
+# skopiowanie danych
+my_df <- raw_df
+
+# wyodrebnienie danych zawierajacych brakujace wartosci promieniowania
+missing_irradiamento <- my_df %>% filter(irradiamento == 0, kwh > 0)
+
+# wyznaczenie pozostalej czesci zbioru danych
+occurring_irradiamento <- setdiff(my_df, missing_irradiamento)
+
+# zamiana wartosci brakujacych na oszacowana wartosc sredniej
+missing_irradiamento$irradiamento <- apply(missing_irradiamento, 1, function (row) {
+	similar_data <- my_df %>%
+		filter(
+			data == row[["data"]]
+		)
+	
+	row[["irradiamento"]] <- mean(similar_data[["irradiamento"]])
+})
+
+# sklejenie fragmentow zbioru z powrotem w jeden
+my_df <- rbind(occurring_irradiamento, missing_irradiamento)
+```
+
+
+# Analiza posiadanych danych
+
+Po wstêpnym przygotowaniu danych przyst¹piono do ich analizy. Przebadano miêdzy innymi wartoœci przyjmowane przez poszczególne atrybuty jak równie¿ korelacjê miêdzy poszczególnymi zmiennymi. Przygotowano równie¿ wykresy zmiany wytwarzanej energii w czasie i przestrzeni.
+
+
+## Podsumowanie zbioru danych
+
+Analizowany zbiór danych zawiera informacje na temat energii, wytwarzanej przez panele fotowoltaiczne. Dane te pochodz¹ z trzech elektrowni s³onecznych we W³oszech. Zbiór danych sk³ada siê z `r nrow(my_df)` wierszy. Ka¿dy z nich zawiera œrednie wartoœci pomiarów wyznaczane co godzinê dla pojedynczego czujnika. Poza wartoœciami wytwarzanej energii i znacznikami czasowymi, dla ka¿dego z czujników przechowywane s¹ dane geograficzne i pogodowe. W sumie ka¿dy z wierszy opisany jest przez `r ncol(my_df)` atrybutów. S¹ to:
+
+```{r data_summary, echo = FALSE, results = 'hold'}
+names(my_df)
+```
+
+
+## Analiza wartoœci atrybutów
+
+Wszystkie dane znajduj¹ce siê w analizowanym zbiorze, za wyj¹tkiem identyfikatora pomiaru (`id`), roku (`anno`) oraz pe³nej daty (`data`), s¹ znormalizowane. Z tego powodu ich analiza jest utrudniona. W tabeli poni¿ej przedstawiono wartoœci podstawowych statystyk dla wybranych atrybutów omawianego zbioru. Statystyki te to: wartoœæ minimalna, wartoœæ maksymalna, œrednia arytmetyczna, mediana, pierwszy i trzeci kwartyl, a tak¿e liczba unikalnych wartoœci.
+
+```{r attribute_values, echo = FALSE, results = 'hold'}
+# wybor danych do wyliczenia statystyk
+data <- my_df %>% select(
+	temperatura_ambiente, irradiamento, pressure, windspeed,
+	humidity, dewpoint, windbearing, cloudcover,
+	altitude, azimuth, kwh
+)
+
+# wyliczenie podstawowych statystyk
+statistics <- do.call(
+	data.frame,
+	list(
+		# wartosc minimalna
+		min = apply(data, 2, min),
+		
+		# pierwszy kwartyl
+		first_quartile = apply(data, 2, function (x) {
+			quantile(x, 0.25)
+		}),
+		
+		# mediana
+		median = apply(data, 2, function (x) {
+			quantile(x, 0.5)
+		}),
+		
+		# srednia arytmetyczna
+		mean = apply(data, 2, mean),
+		
+		# trzeci kwartyl
+		third_quartile = apply(data, 2, function (x) {
+			quantile(x, 0.75)
+		}),
+		
+		# wartosc maksymalna
+		max = apply(data, 2, max),
+		
+		# liczba unikalnych wartosci
+		unique_count = apply(data, 2, function (x) {
+			length(unique(x))
+		})
+	)
+)
+
+# wyswietlenie statystyk
+kable(statistics, format = "html", col.names = c(
+	"Wartoœæ najmniejsza", "Pierwszy kwartyl", "Mediana",
+	"Œrednia arytmetyczna", "Trzeci kwartyl", "Wartoœæ najwiêksza",
+	"Liczba unikalnych wartoœci"), align = 'c')
+```
+
+
+## Korelacja miêdzy zmiennymi
+
+Podczas wyznaczania macierzy korelacji pominiêto atrybut `data`, poniewa¿ jest on typu `Factor`, natomiast funkcja `cor()` wymaga danych numerycznych.
+
+```{r correlation, results = 'hold'}
+# wyznaczenie macierzy korelacji (pominiecie atrybutu 11 - data)
+cor_matrix <- cor(my_df[, -11])
+
+# przeksztalcenie macierzy korelacji
+cor_df <- melt(cor_matrix)
+```
+
+Jak widaæ na poni¿szym wykresie, iloœæ wytworzonej energii `kwh` jest znacz¹co skorelowana miêdzy innymi z promieniowaniem `irradiamento` (pozytywnie) oraz z wilgotnoœci¹ powietrza `humidity` (negatywnie). Wspó³czynniki tych korelacji wynosz¹ odpowiednio: `r cor_df$value[cor_df$Var1 == "kwh" & cor_df$Var2 == "irradiamento"]` i `r cor_df$value[cor_df$Var1 == "kwh" & cor_df$Var2 == "humidity"]`. Oczywistym jest fakt, ¿e nie wszystkie znalezione zale¿noœci maj¹ odzwierciedlenie w rzeczywistoœci, np. wartoœæ `idsito` (identyfikator czujnika) nie zale¿y od szerokoœci geograficznej `lat` czy ciœnienia atmosferycznego `pressure` jak mog³yby wskazywaæ wspó³czynniki korelacji miêdzy tymi zmiennymi. Podobnie nie nale¿y szukaæ zale¿noœci miêdzy szerokoœci¹ geograficzn¹ `lat` a d³ugoœci¹ geograficzn¹ `lon`. Warto zwróciæ jednak uwagê np. na korelacjê pomiêdzy godzin¹ (`ora`) a azymutem (`azimuth`), który okreœla po³o¿enie S³oñca na niebie (kierunek geograficzny wyra¿ony w mierze k¹towej). W godzinach porannych S³oñce znajduje siê po wschodniej stronie nieba, natomiast wieczorem po stronie zachodniej. 
+
+```{r correlation_plot, echo = FALSE, fig.align = 'center', fig.width = 12, fig.height = 10}
+# wykres korelacji miedzy zmiennymi
+ggplot(cor_df, aes(Var1, Var2, fill = value)) +
+	scale_fill_gradient2(low = "red", mid = "white", high = "blue", limit = c(-1, 1), name = "Wspó³czynnik korelacji") +
+	geom_tile(color = "black") +
+	theme(
+		axis.title.x = element_blank(),
+		axis.title.y = element_blank(),
+		axis.text.x = element_text(angle = 60, hjust = 1, size = 12),
+		axis.text.y = element_text(size = 12)
+	)
+```
+
+
+## Zmiana wytwarzanej energii w czasie i przestrzeni
+
+Poni¿szy wykres przedstawia zmianê wytwarzanej energii w czasie i przestrzeni. Aby pokazaæ/ukryæ serie danych nale¿y klikn¹æ na ¿¹danej pozycji legendy (ka¿da seria danych to dane z jednego czujnika). Korzystaj¹c z suwaka na dole mo¿liwa jest zmiana zakresu czasu.
+
+```{r interactive_plot, echo = FALSE, results = 'hold', fig.align = 'center', fig.width = 10, fig.height = 8}
+# wykres zmiany energii w czasie i przestrzeni
+plot_ly(
+	x = as.POSIXct(my_df$data, format = "%m/%d/%Y %H:%M"),
+	y = my_df$kwh,
+	color = factor(my_df$idsito),
+	colors = "Set1",
+	visible = "legendonly"
+) %>%
+	add_lines() %>%
+	layout(
+		title = "Zmiana wytwarzanej energii w czasie i przestrzeni",
+		xaxis = list(
+			title = "Czas",
+			rangeslider = list(
+				type = "date"
+			)
+		),
+		yaxis = list(
+			title = "Wytworzona energia"
+		)
+	)
+```
+
+
+# Przewidywanie przysz³ej produkcji energii
+
+Posiadaj¹c historyczne dane dotycz¹ce wytwarzanej energii, mo¿na pokusiæ siê o estymacjê dalszej produkcji, w oparciu o te dane. Jedn¹ z metod jest stworzenie regresora.
+
+
+## Próba stworzenia regresora przewiduj¹cego wytwarzan¹ energiê przez ka¿dy panel w ujêciu godzinowym
+
+W pierwszym kroku, przed stworzeniem regresora, sprawdzono, od których zmiennych najbardziej zale¿y iloœæ wytwarzanej energii. W tym celu wykorzystano sporz¹dzon¹ wczeœniej macierz korelacji:
+
+```{r corelation_with_kwh, results = 'hold'}
+# stworzenie prostego data frame'u zawierajacego nazwe atrybutu i wartosc jego korelacji z atrybutem kwh
+cor_with_kwh <- data.frame(names(my_df[, -11]), unname(cor_matrix["kwh",]))
+names(cor_with_kwh) <- c("arg", "value")
+
+# posortowanie wynikow i wybranie 10 najbardziej skorelowanych zmiennych z kwh
+cor_with_kwh %>%
+	arrange(desc(abs(value))) %>% # abs - niewazne czy korelacja pozytywna czy negatywna
+	head(11) # 11. jest korelacja kwh z kwh
+```
+
+Najlepsze wyniki otrzymano dla piêciu najbardziej skorelowanych zmiennych. Trafnoœæ regresji oszacowano na podstawie miary RMSE (Root-Mean-Square Error).
+
+```{r regressor, results = 'hold'}
+# podzial zbioru na uczacy i testowy
+inTraining <- createDataPartition(
+	y = my_df$idsito,
+	p = 0.75,
+	list = FALSE
+)
+
+trainingSet <- my_df[inTraining,]
+testingSet <- my_df[-inTraining,]
+
+# podzial zbioru uczacego na uczacy i walidacyjny
+trainCtrl <- trainControl(
+	method = "repeatedcv",
+	number = 2,
+	repeats = 5
+)
+
+# szukanie modelu
+model <- train(
+	kwh ~ idsito + irradiamento + irr_pvgis_mod + humidity + azimuthi + irri,
+	data = trainingSet,
+	method = "lm",
+	metric = "RMSE",
+	trControl = trainCtrl
+)
+
+# zastosowanie modelu do zbioru testowego
+prediction <- predict(model, newdata = testingSet)
+
+# wyswietlenie wynikow
+results <- data.frame(obs =  testingSet$kwh, pred = prediction)
+defaultSummary(results)
+```
+
+
+## Analiza wa¿noœci atrybutów najlepszego znalezionego modelu regresji
+
+Nie ulega w¹tpliwoœci fakt, ¿e iloœæ wytwarzanej przez elektrownie s³oneczne energii w najwiêkszym stopniu zale¿y od wartoœci promieniowania. Jego brak jest jednoznaczny z brakiem energii produkowanej przez panele fotowoltaiczne. Innym parametrem pogodowym, który ma istotny wp³yw na iloœæ wytwarzanej energii jest wilgotnoœæ powietrza. Im wiêcej pary wodnej znajduje siê w powietrzu, tym wiêcej promieniowania s³onecznego jest przez ni¹ absorbowane i rozpraszane, a co za tym idzie w mniejszym stopniu promieniowanie to dociera do panelu fotowoltaicznego. Iloœæ wytwarzanej energii zale¿y tak¿e od azymutu S³oñca, czyli od jego po³o¿enia.
